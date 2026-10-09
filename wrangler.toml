@@ -1,0 +1,5 @@
+name = "ludo-rewards-worker"
+main = "worker/index.ts"
+compatibility_date = "2026-10-01"
+[vars]
+SUPABASE_URL = "https://your-project.supabase.co"
