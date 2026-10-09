@@ -1,9 +1,336 @@
-import{useEffect,useState,type ReactNode,type FormEvent}from'react';import{Link,NavLink,Route,Routes,useNavigate,useParams}from'react-router-dom';import{motion}from'framer-motion';import{Trophy,Coins,ShoppingBag,UserRound,Menu,X,ShieldCheck,Gamepad2,ChevronRight,LockKeyhole,Gift,Mail,LogOut}from'lucide-react';import{api,signIn,signUp}from'./lib/api';import LobbyPage from './pages/Lobby';import GamePage from './pages/Game';import{useGameStore as useStore,type User}from'./store/useGameStore';
-function App(){const{user,setUser,toast}=useStore(),[drawer,setDrawer]=useState(false);useEffect(()=>{if(localStorage.getItem('ludo-token'))api<{user:User}>('/api/profile',undefined,'GET').then(x=>setUser(x.user)).catch(()=>{localStorage.removeItem('ludo-token');setUser(null)})},[]);return <div className="app-shell"><header className="topbar"><Link to="/" className="brand"><span className="brand-mark">L</span><span>Ludo<span className="brand-light">League</span><small>PLAY · GROW · REPEAT</small></span></Link><nav className="desktop-nav"><NavLink to="/">Play</NavLink><NavLink to="/leaderboard">Leaderboard</NavLink><NavLink to="/store">Store</NavLink><NavLink to="/profile">Profile</NavLink></nav><div className="top-actions"><span className="currency"><span>◉</span> {user?.coins??100}</span><Link className="avatar" to="/profile">{user?.username?.[0]?.toUpperCase()||'?'}</Link><button className="mobile-menu" onClick={()=>setDrawer(!drawer)} aria-label="Toggle navigation">{drawer?<X/>:<Menu/>}</button></div></header>{drawer&&<nav className="mobile-drawer"><NavLink to="/" onClick={()=>setDrawer(false)}>Play</NavLink><NavLink to="/leaderboard" onClick={()=>setDrawer(false)}>Leaderboard</NavLink><NavLink to="/store" onClick={()=>setDrawer(false)}>Store</NavLink><NavLink to="/profile" onClick={()=>setDrawer(false)}>Profile</NavLink></nav>}<main><Routes><Route path="/" element={<LobbyPage/>}/><Route path="/game/:matchId" element={<GamePage/>}/><Route path="/leaderboard" element={<Leaderboard/>}/><Route path="/store" element={<Store/>}/><Route path="/profile" element={<Profile/>}/><Route path="/terms" element={<Legal/>}/><Route path="/privacy" element={<Legal privacy/>}/><Route path="/delete-account" element={<DeleteAccount/>}/><Route path="*" element={<LobbyPage/>}/></Routes></main><footer><span>© 2026 Ludo League</span><span className="foot-links"><Link to="/privacy">Privacy</Link><Link to="/terms">Terms</Link><Link to="/delete-account">Account deletion</Link></span><span>Made for India 🇮🇳</span></footer>{toast&&<div className="toast">{toast}</div>}</div>}
-function SectionTitle({eyebrow,title,children}:{eyebrow:string;title:string;children?:ReactNode}){return <div className="section-title"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1></div>{children}</div>}
-function Leaderboard(){const[rows,setRows]=useState<any[]>([]);useEffect(()=>{api<{players:any[]}>('/api/leaderboard',undefined,'GET').then(r=>setRows(r.players)).catch(()=>{})},[]);return <div className="page"><SectionTitle eyebrow="WEEKLY RANKINGS" title="Leaderboard"><span className="week-chip">TOP XP</span></SectionTitle><p className="muted">Earn XP by playing matches. Every match counts.</p><div className="leader-list"><div className="leader-head"><span>RANK</span><span>PLAYER</span><span>LEVEL</span><span>XP</span></div>{rows.length?rows.map((r,i)=><div className="leader-row" key={r.username+i}><span className="rank">{i<3?['①','②','③'][i]:String(i+1).padStart(2,'0')}</span><span className="leader-person"><i>{r.username[0]?.toUpperCase()}</i>{r.username}</span><span>LVL {r.level}</span><b>{r.xp} XP</b></div>):<div className="empty-state">The leaderboard is ready for its first players.</div>}</div></div>}
-const items=[{id:'sunset_dice',name:'Sunset Dice',kind:'DICE SKIN',price:150,icon:'🎲',tone:'peach'},{id:'forest_board',name:'Forest Board',kind:'BOARD THEME',price:250,icon:'🌿',tone:'green'},{id:'royal_board',name:'Royal Board',kind:'BOARD THEME',price:400,icon:'✦',tone:'purple'}];function Store(){const notify=useStore(s=>s.notify),user=useStore(s=>s.user),[owned,setOwned]=useState<string[]>([]);async function buy(item:any){try{await api('/api/store/buy',{itemId:item.id});setOwned([...owned,item.id]);notify(`${item.name} added to your collection`);const p=await api<{user:User}>('/api/profile',undefined,'GET');useStore.getState().setUser(p.user)}catch(e){notify((e as Error).message)}}return <div className="page"><SectionTitle eyebrow="MAKE IT YOURS" title="The shop"><span className="coin-total">◉ {user?.coins??100} coins</span></SectionTitle><p className="muted">Cosmetics only. Every item is bought with coins earned by playing.</p><div className="shop-grid">{items.map(item=><article className="shop-item" key={item.id}><div className={`item-art ${item.tone}`}><span>{item.icon}</span><i>✦</i></div><span className="eyebrow">{item.kind}</span><h3>{item.name}</h3><div className="item-buy"><b>◉ {item.price}</b><button className="button button-dark" onClick={()=>buy(item)} disabled={owned.includes(item.id)}>{owned.includes(item.id)?'Owned':'Get item'}</button></div></article>)}</div><div className="store-foot"><Gift size={18}/> New looks, same free-to-play game. No real money purchases.</div></div>}
-function Profile(){const{user,setUser,notify}=useStore(),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[username,setUsername]=useState(''),[mode,setMode]=useState<'in'|'up'>('in');async function submit(e:FormEvent){e.preventDefault();try{if(mode==='in')await signIn(email,password);else await signUp(email,password,username);const p=await api<{user:User}>('/api/profile',undefined,'GET');setUser(p.user);notify(mode==='in'?'Welcome back!':'Account created. You are ready to play.')}catch(e){notify((e as Error).message)}}async function logout(){localStorage.removeItem('ludo-token');setUser(null)}return <div className="page"><SectionTitle eyebrow="YOUR PLAYER CARD" title="Profile"/>{user?<div className="profile-card"><div className="profile-avatar">{user.username[0]?.toUpperCase()}</div><div><h2>{user.username}</h2><span>LEVEL {user.level} · {user.xp} XP</span><div className="xp-track"><i style={{width:`${user.xp%100}%`}}/></div></div><div className="profile-stats"><div><b>◉ {user.coins}</b><span>Coins</span></div><div><b>◇ {user.gems}</b><span>Gems</span></div><div><b>🔥 {user.streak}</b><span>Streak</span></div></div><button className="button button-ghost" onClick={logout}><LogOut size={15}/> Sign out</button></div>:<div className="auth-card"><div className="auth-heading"><div className="auth-icon"><UserRound/></div><h2>{mode==='in'?'Welcome to the table':'Create your player card'}</h2><p>Sign in to save progress and play online.</p></div><form onSubmit={submit}><label>Email<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required placeholder="you@example.com"/></label><label>Password<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={8} placeholder="At least 8 characters"/></label>{mode==='up'&&<label>Player name<input value={username} onChange={e=>setUsername(e.target.value)} required placeholder="How should we call you?"/></label>}<button className="button button-lime auth-submit">{mode==='in'?'Sign in':'Create account'} <ChevronRight size={16}/></button><button className="text-link signup" type="button" onClick={()=>setMode(mode==='in'?'up':'in')}>{mode==='in'?'Create a new account':'Already have an account? Sign in'}</button></form></div>}</div>}
-function Legal({privacy=false}:{privacy?:boolean}){return <div className="page legal"><span className="eyebrow">LUDO LEAGUE · INDIA</span><h1>{privacy?'Privacy policy':'Terms of service'}</h1>{privacy?<><h2>Information we collect</h2><p>We store your email and player name to operate your account, along with match results, progress and in-game currency balances.</p><h2>How we use information</h2><p>We use account and game data to provide multiplayer, save progress, prevent abuse and show leaderboards. We do not sell personal information.</p><h2>Your choices</h2><p>You can delete your account and associated data from the Profile page. You can stop using the service at any time.</p></>:<><h2>Free-to-play game</h2><p>Coins and gems are virtual items used within the game. Coins are earned by playing; gems are for cosmetics. Virtual items have no cash value and cannot be transferred or redeemed.</p><h2>No real money gambling</h2><p><strong>This is free-to-play, no gambling, no real money prizes per Google Play policy.</strong> There are no cash stakes, entry fees, UPI payments, withdrawals, wallet transfers or real-money prizes.</p><h2>Fair play</h2><p>Dice rolls, moves and game rewards are verified by our game server. Do not exploit, automate or interfere with matches.</p></>}</div>}
-function DeleteAccount(){const notify=useStore(s=>s.notify),setUser=useStore(s=>s.setUser);async function remove(){if(!confirm('Permanently delete your account and game progress?'))return;try{await api('/api/account',undefined,'DELETE');localStorage.removeItem('ludo-token');setUser(null);notify('Account deleted.')}catch(e){notify((e as Error).message)}}return <div className="page legal"><span className="eyebrow">YOUR DATA, YOUR CALL</span><h1>Account deletion</h1><p>Delete your account and request removal of your profile, progress and game history.</p><button className="button button-ghost" onClick={remove}>Delete my account</button></div>}
-export default App;
+import { useEffect, useState } from 'react';
+import { motion } from 'framer-motion';
+import {
+  Coins,
+  Crown,
+  Flame,
+  Gamepad2,
+  Gift,
+  ShieldCheck,
+  Sparkles,
+  Star,
+  Trophy,
+} from 'lucide-react';
+import { api, fetchProfileFromNeon } from './lib/api';
+
+type LeaderboardRow = {
+  id: string;
+  username: string;
+  coins: number;
+  level: number;
+  streak: number;
+};
+
+type User = {
+  id: string;
+  email: string;
+  username: string;
+  coins: number;
+  gems: number;
+  xp: number;
+  level: number;
+  streak: number;
+};
+
+const demoUser: User = {
+  id: 'demo-user',
+  email: 'player@modernludo.app',
+  username: 'Player One',
+  coins: 2450,
+  gems: 128,
+  xp: 3200,
+  level: 18,
+  streak: 7,
+};
+
+const demoLeaderboard: LeaderboardRow[] = [
+  { id: '1', username: 'Aarav', coins: 4200, level: 24, streak: 9 },
+  { id: '2', username: 'Mira', coins: 3900, level: 23, streak: 8 },
+  { id: '3', username: 'Leo', coins: 3650, level: 22, streak: 7 },
+  { id: '4', username: 'Zara', coins: 3400, level: 21, streak: 6 },
+];
+
+export default function App() {
+  const [user, setUser] = useState<User>(demoUser);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardRow[]>(demoLeaderboard);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+
+      try {
+        const profileData = await fetchProfileFromNeon<{ user?: User; ...User } | User | null>();
+        const boardData = await api<{ players?: LeaderboardRow[] }>('/api/leaderboard', undefined, 'GET');
+
+        if (cancelled) return;
+
+        if (profileData && typeof profileData === 'object' && 'id' in profileData) {
+          setUser(profileData as User);
+        } else if (profileData && 'user' in profileData && profileData.user) {
+          setUser(profileData.user as User);
+        } else {
+          setUser(demoUser);
+        }
+
+        setLeaderboard(boardData?.players?.length ? boardData.players : demoLeaderboard);
+      } catch {
+        if (!cancelled) {
+          setUser(demoUser);
+          setLeaderboard(demoLeaderboard);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-mesh-bg text-white">
+      <div className="mx-auto max-w-6xl px-4 pb-20 pt-5 sm:px-6 lg:px-8">
+        <header className="mb-6 rounded-[30px] border border-white/20 bg-white/10 p-4 shadow-premium backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-ludoGold to-ludoOrange text-xl shadow-gold">
+                ♛
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.26em] text-white/60">Ludo Rewards</div>
+                <h1 className="font-heading text-xl font-extrabold">Modern Ludo</h1>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="hidden rounded-full border border-ludoGold/30 bg-ludoGold/10 px-3 py-2 text-sm font-bold text-ludoGold sm:block">
+                <span className="inline-flex items-center gap-2">
+                  <Coins className="h-4 w-4" />
+                  {user.coins}
+                </span>
+              </div>
+              <button className="ludo-button bg-gradient-to-r from-[#FFD700] to-[#FFA500] text-slate-900">
+                <span className="inline-flex items-center gap-2">
+                  <Gamepad2 className="h-4 w-4" />
+                  Play now
+                </span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+          <section className="space-y-6">
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-[30px] border border-white/20 bg-white/10 p-5 shadow-premium backdrop-blur-xl"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="mb-1 text-[10px] uppercase tracking-[0.28em] text-violet-100/70">Profile</div>
+                  <h2 className="font-heading text-3xl font-extrabold">Champion's Lounge</h2>
+                </div>
+                <div className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-bold uppercase tracking-[0.22em] text-yellow-200">
+                  Lv {user.level}
+                </div>
+              </div>
+
+              <div className="mt-6 flex items-center gap-4">
+                <div className="relative">
+                  <div className="absolute inset-[-6px] rounded-full bg-gradient-to-br from-yellow-300 via-pink-400 to-violet-500 opacity-80 blur-sm" />
+                  <div className="relative flex h-20 w-20 items-center justify-center rounded-full border-4 border-white/30 bg-gradient-to-br from-violet-500 to-indigo-500 text-3xl font-black shadow-glow">
+                    {user.username.slice(0, 1).toUpperCase()}
+                  </div>
+                </div>
+
+                <div className="flex-1">
+                  <div className="text-2xl font-black">{user.username}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-white/80">
+                    <span className="inline-flex items-center gap-1">
+                      <Flame className="h-4 w-4 text-orange-300" />
+                      {user.streak} day streak
+                    </span>
+                    <span className="inline-flex items-center gap-1">
+                      <Sparkles className="h-4 w-4 text-cyan-300" />
+                      {user.xp} XP
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-yellow-300/40 bg-gradient-to-r from-yellow-400/30 to-orange-500/20 px-4 py-3 text-right">
+                  <div className="text-[10px] uppercase tracking-[0.2em] text-yellow-100/70">Coins</div>
+                  <div className="mt-1 flex items-center justify-end gap-2 text-2xl font-black text-yellow-200">
+                    <Coins className="h-5 w-5" />
+                    {user.coins}
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                {[
+                  { label: 'Games won', value: '126', icon: Trophy },
+                  { label: 'Gems', value: user.gems, icon: Sparkles },
+                  { label: 'Best streak', value: '19', icon: Flame },
+                ].map((item, index) => (
+                  <motion.div
+                    key={item.label}
+                    whileHover={{ y: -2 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="rounded-[22px] border border-white/15 bg-white/8 p-4 shadow-soft"
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <item.icon className="h-5 w-5 text-white/80" />
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-white/60">#{index + 1}</span>
+                    </div>
+                    <div className="text-3xl font-extrabold">{item.value}</div>
+                    <div className="text-sm text-white/70">{item.label}</div>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.06 }}
+              className="rounded-[30px] border border-white/20 bg-white/10 p-5 shadow-premium backdrop-blur-xl"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] uppercase tracking-[0.26em] text-violet-100/70">Leaderboard</div>
+                  <h3 className="font-heading text-2xl font-bold">Top players</h3>
+                </div>
+                <div className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-white/70">
+                  {leaderboard.length} players
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {loading ? (
+                  <div className="space-y-3">
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="h-14 animate-pulse rounded-2xl bg-white/10" />
+                    ))}
+                  </div>
+                ) : (
+                  leaderboard.slice(0, 4).map((player, index) => (
+                    <motion.div
+                      key={player.id}
+                      initial={{ opacity: 0, x: -12 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: index * 0.05 }}
+                      className="flex items-center gap-3 rounded-[22px] border border-white/15 bg-white/8 p-3"
+                    >
+                      <div
+                        className={`flex h-10 w-10 items-center justify-center rounded-full font-bold ${
+                          index === 0
+                            ? 'bg-gradient-to-r from-yellow-400 to-amber-500 text-slate-900'
+                            : index === 1
+                              ? 'bg-gradient-to-r from-slate-300 to-slate-500 text-slate-900'
+                              : index === 2
+                                ? 'bg-gradient-to-r from-orange-400 to-red-500 text-white'
+                                : 'bg-gradient-to-r from-violet-400 to-indigo-500 text-white'
+                        }`}
+                      >
+                        {index + 1}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-bold">{player.username}</div>
+                        <div className="text-sm text-white/60">Level {player.level}</div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="flex items-center justify-end gap-1 font-bold text-yellow-200">
+                          <Coins className="h-4 w-4" />
+                          {player.coins}
+                        </div>
+                        <div className="text-xs text-white/60">{player.streak} day streak</div>
+                      </div>
+                    </motion.div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </section>
+
+          <aside className="space-y-6">
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-[30px] border border-white/20 bg-white/10 p-5 shadow-premium backdrop-blur-xl"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-violet-100/70">Reward chest</div>
+                <Crown className="h-5 w-5 text-yellow-200" />
+              </div>
+
+              <div className="space-y-3">
+                <button className="ludo-button w-full bg-gradient-to-r from-[#FFD700] to-[#FFA500] text-slate-900">
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Gift className="h-4 w-4" />
+                    Claim Daily Chest
+                  </span>
+                </button>
+
+                <button className="ludo-button w-full bg-gradient-to-r from-[#FF7675] to-[#FDCB6E] text-white">
+                  <span className="inline-flex items-center justify-center gap-2">
+                    <Trophy className="h-4 w-4" />
+                    Play Ranked Match
+                  </span>
+                </button>
+              </div>
+            </motion.div>
+
+            <div className="rounded-[30px] border border-white/20 bg-white/10 p-5 shadow-premium backdrop-blur-xl">
+              <div className="mb-3 text-[10px] uppercase tracking-[0.26em] text-violet-100/70">Daily mission</div>
+              <div className="space-y-3">
+                {[
+                  ['Daily Login', 20],
+                  ['Win 1 Match', 50],
+                  ['Play 3 Games', 100],
+                ].map(([title, reward]) => (
+                  <div
+                    key={title}
+                    className="flex items-center justify-between rounded-[20px] border border-white/15 bg-white/8 p-3"
+                  >
+                    <div>
+                      <div className="font-bold">{title}</div>
+                      <div className="text-sm text-white/60">Reward</div>
+                    </div>
+                    <div className="rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 px-3 py-1 font-bold">
+                      +{reward}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[30px] border border-white/20 bg-white/10 p-5 shadow-premium backdrop-blur-xl">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="text-[10px] uppercase tracking-[0.26em] text-violet-100/70">Status</div>
+                <ShieldCheck className="h-5 w-5 text-green-300" />
+              </div>
+              <div className="flex items-center gap-3 rounded-[20px] border border-white/15 bg-white/8 p-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-gradient-to-br from-green-400 to-emerald-500 text-xl shadow-glow">
+                  <Star className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="font-bold">Server safe</div>
+                  <div className="text-sm text-white/60">No localhost crash on Vercel</div>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </main>
+      </div>
+    </div>
+  );
+}
