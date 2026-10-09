@@ -1,0 +1,2 @@
+DATABASE_URL="postgresql://user:password@ep-example-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require"
+JWT_SECRET="replace-with-a-random-secret-at-least-32-characters"

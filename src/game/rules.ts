@@ -1,18 +1,17 @@
-export type Token = {id:number;pos:number};
-export type Player = {id:string;username:string;color:string;tokens:Token[]};
-export type GameState = {players:Player[];turn:number;dice:number|null;sixes:number;status:'waiting'|'playing'|'finished';winnerId:string|null};
-export const STARTS=[0,13,26,39];
-export const SAFE_CELLS=new Set([0,8,13,21,26,34,39,47]);
-export const PATH_LENGTH=57; // 0..51 shared track, 52..56 home stretch, 57 finished
-export const createGame=(players:Pick<Player,'id'|'username'|'color'>[]):GameState=>({players:players.map(p=>({...p,tokens:Array.from({length:4},(_,id)=>({id,pos:-1}))})),turn:0,dice:null,sixes:0,status:players.length>=2?'playing':'waiting',winnerId:null});
-export const absoluteCell=(playerIndex:number,pos:number)=>pos>=0&&pos<52?(STARTS[playerIndex]+pos)%52:null;
-export const legalTokens=(state:GameState,dice:number):number[]=>{const p=state.players[state.turn];if(!p)return[];return p.tokens.filter(t=>t.pos===-1?dice===6:t.pos<57&&t.pos+dice<=57).map(t=>t.id)};
-export function applyMove(state:GameState,playerId:string,tokenId:number,from:number,to:number,dice:number):GameState {
- if(state.status!=='playing'||state.players[state.turn]?.id!==playerId||state.dice!==dice)throw Error('It is not your turn or the dice has changed');
- const pi=state.turn,p=state.players[pi],token=p.tokens.find(t=>t.id===tokenId);if(!token||token.pos!==from)throw Error('Token does not belong to this player or position is stale');
- if(!legalTokens(state,dice).includes(tokenId))throw Error('Illegal token move');const expected=from===-1?0:from+dice;if(to!==expected)throw Error('Move distance does not match dice');
- const players=state.players.map(x=>({...x,tokens:x.tokens.map(t=>({...t}))}));players[pi].tokens[tokenId].pos=to;
- const cell=absoluteCell(pi,to);if(cell!==null&&!SAFE_CELLS.has(cell)){for(let oi=0;oi<players.length;oi++)if(oi!==pi)for(const t of players[oi].tokens){if(absoluteCell(oi,t.pos)===cell)t.pos=-1}}
- const win=players[pi].tokens.every(t=>t.pos===57);const sixes=dice===6?state.sixes:0;const nextTurn=dice===6?pi:(pi+1)%players.length;
- return {...state,players,turn:nextTurn,dice:null,sixes,status:win?'finished':'playing',winnerId:win?playerId:null};
-}
+export const SAFE_CELLS=[0,8,13,21,26,34,39,47] as const;
+export type Color='red'|'green'|'yellow'|'blue';
+export const START_POS:Record<Color,number>={red:0,green:13,yellow:26,blue:39};
+export const HOME_ENTRY:Record<Color,number>={red:50,green:12,yellow:25,blue:38};
+const COLORS:Color[]=['red','green','yellow','blue'];
+/** -1 is the yard; 0..51 are the outer loop; 52..57 are the private home lane. */
+export function nextPosition(tokenPos:number,dice:number,color:Color='red'):number{if(!Number.isInteger(dice)||dice<1||dice>6)throw new Error('Dice must be from 1 to 6');if(tokenPos===-1){if(dice!==6)throw new Error('A six is required to leave the yard');return 0}if(tokenPos>=52&&tokenPos<57){if(tokenPos+dice>57)throw new Error('Token cannot move past home');return tokenPos+dice}if(tokenPos<0||tokenPos>=52)throw new Error('Invalid token position');const entryProgress=(HOME_ENTRY[color]-START_POS[color]+52)%52,raw=tokenPos+dice;if(tokenPos>entryProgress)throw new Error('Token is past its home entry');if(raw<=entryProgress)return raw;const home=52+(raw-entryProgress-1);if(home>57)throw new Error('Token cannot move past home');return home}
+/** Returns the indexes of tokens that can legally move for this roll and color. */
+export function getValidMoves(tokens:number[],dice:number,color:Color='red'):number[]{if(!Number.isInteger(dice)||dice<1||dice>6)return[];return tokens.flatMap((pos,index)=>{try{nextPosition(pos,dice,color);return[index]}catch{return[]}})}
+export function isSafeCell(cell:number):boolean{return (SAFE_CELLS as readonly number[]).includes(((cell%52)+52)%52)}
+export function absoluteCell(color:Color|number,pos:number):number|null{const start=typeof color==='number'?START_POS[COLORS[color]||'red']:START_POS[color];return pos>=0&&pos<52?(start+pos)%52:null}
+/** Checks opponent tokens using color-relative progress positions. */
+export function checkCut(allTokens:Record<string,number[]>,movingColor:Color,newPos:number):{cutPlayer:Color;cutToken:number}|null{const newCell=absoluteCell(movingColor,newPos);if(newCell===null||isSafeCell(newCell))return null;for(const color of COLORS){if(color===movingColor)continue;const tokens=allTokens[color]||[];for(let token=0;token<tokens.length;token++)if(absoluteCell(color,tokens[token])===newCell)return{cutPlayer:color,cutToken:token}}return null}
+export function checkWin(tokens:number[]):boolean{return tokens.length===4&&tokens.every(pos=>pos===57)}
+export type Player={id:string;username:string;color:Color;tokens:number[]};export type GameState={players:Player[];turnIndex:number;dice:number|null;sixes:number;status:'waiting'|'playing'|'finished';winnerId:string|null};
+export function createGame(players:Omit<Player,'tokens'>[]):GameState{return{players:players.map(p=>({...p,tokens:[-1,-1,-1,-1]})),turnIndex:0,dice:null,sixes:0,status:players.length>=2?'playing':'waiting',winnerId:null}}
+export function applyMove(state:GameState,playerId:string,tokenId:number,dice:number):{state:GameState;from:number;to:number;cut:{playerId:string;tokenId:number}|null}{if(state.status!=='playing'||state.players[state.turnIndex]?.id!==playerId)throw new Error('Not your turn');if(state.dice!==dice)throw new Error('Dice does not match the pending roll');const player=state.players[state.turnIndex],color=player.color;if(!Number.isInteger(tokenId)||tokenId<0||tokenId>3||!getValidMoves(player.tokens,dice,color).includes(tokenId))throw new Error('Illegal token selection');const from=player.tokens[tokenId],to=nextPosition(from,dice,color),players=state.players.map(p=>({...p,tokens:[...p.tokens]}));players[state.turnIndex].tokens[tokenId]=to;const cell=absoluteCell(color,to);let cut:{playerId:string;tokenId:number}|null=null;if(cell!==null&&!isSafeCell(cell)){for(let pi=0;pi<players.length;pi++){if(pi===state.turnIndex)continue;const otherColor=players[pi].color;for(let ti=0;ti<4;ti++){if(absoluteCell(otherColor,players[pi].tokens[ti])===cell){players[pi].tokens[ti]=-1;cut={playerId:players[pi].id,tokenId:ti};break}}if(cut)break}}const won=checkWin(players[state.turnIndex].tokens),nextState:GameState={...state,players,dice:null,status:won?'finished':'playing',winnerId:won?playerId:null,turnIndex:won?state.turnIndex:(dice===6?state.turnIndex:(state.turnIndex+1)%players.length)};return{state:nextState,from,to,cut}}

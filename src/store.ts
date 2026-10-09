@@ -1,1 +1,0 @@
-import{create}from'zustand';type User={id:string;username:string;coins:number;gems:number;xp:number;level:number};type Store={user:User|null;setUser:(x:User|null)=>void;toast:string;notify:(s:string)=>void};export const useStore=create<Store>(set=>({user:null,setUser:user=>set({user}),toast:'',notify:toast=>{set({toast});setTimeout(()=>set({toast:''}),2800)}}));

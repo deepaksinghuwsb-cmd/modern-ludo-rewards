@@ -1,34 +1,54 @@
-# Ludo League
+# Modern Ludo Rewards
 
-Free-to-play Ludo for web and Android, built with React, TypeScript, Vite, Zustand, Tailwind, Cloudflare Workers (Hono), Supabase, and Capacitor.
+Free-to-play Ludo built with React, TypeScript, Vite, Zustand, Tailwind CSS, Framer Motion, Cloudflare Workers (Hono), Durable Objects, Neon Postgres, Drizzle ORM, and Capacitor.
 
 ## Requirements
 
 - Node.js 20+
-- A Supabase project
-- Cloudflare Wrangler (included as a development dependency)
+- Neon Postgres database
+- Cloudflare account for deployment (Wrangler local development works without an account)
 - Android Studio for Android builds
 
-## Run the web app
+## Neon database setup
+
+1. Create a Neon project and copy its pooled connection string.
+2. Copy `.env.example` to `.env` and set `DATABASE_URL`. Keep `.env` out of Git.
+3. Push the Drizzle schema to Neon:
 
 ```sh
 npm install
-cp .env.example .env.local
+npm run db:push
+```
+
+`db:studio` opens Drizzle Studio against `DATABASE_URL`.
+
+## Run locally
+
+```sh
+npm install
+cp .env.example .env
+cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_KEY` (the Supabase anon/publishable key), and `VITE_WORKER_URL` in `.env.local`. Apply `supabase.sql` in the Supabase SQL Editor. Enable email/password authentication. In Supabase Auth settings, add your local web URL (for example `http://localhost:5173`) to the allowed redirect URLs.
-
-## Run the Worker
-
-In a second terminal, set the Worker secrets and start Wrangler:
+In a second terminal, set the same Neon URL and a long random `JWT_SECRET` in `.dev.vars`, then run:
 
 ```sh
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 npm run worker:dev
 ```
 
-Set `SUPABASE_URL` in `wrangler.toml` to your project URL (or configure it as a Worker variable). Set `VITE_WORKER_URL=http://localhost:8787` in `.env.local`. Keep the service role key only in Worker secrets; never place it in a `VITE_` variable or commit it.
+Vite runs at `http://localhost:5173`; the Worker runs at `http://localhost:8787`. Set `VITE_WORKER_URL` in `.env` to the Worker URL if you use a different port.
+
+## Build and deploy
+
+```sh
+npm run build
+npx wrangler secret put DATABASE_URL
+npx wrangler secret put JWT_SECRET
+npm run worker:deploy
+```
+
+Set `VITE_WORKER_URL` to the deployed Worker origin before building the web client. Cloudflare provisions the `LUDO_ROOM` Durable Object binding from `wrangler.toml`.
 
 ## Android
 
@@ -38,14 +58,13 @@ npm run android:sync
 npx cap open android
 ```
 
-Configure the same Supabase and Worker URLs in the web build environment before syncing. Use HTTPS endpoints for a production build. The Android project is generated locally by Capacitor and is not checked in.
+Set the production Worker URL in `.env` before syncing the Android web bundle. The generated Android project is ignored by Git.
 
-## Game and data notes
+## Security and game rules
 
-- Dice are generated in the Worker with `crypto.getRandomValues()`.
-- The Worker checks turn ownership, dice, token ownership, move distance, home entry, safe cells, captures, and wins before saving a move.
-- Coin, XP, mission, and shop balance writes happen in the Worker.
-- Realtime match events use a Supabase Broadcast channel per match.
-- Coins and gems have no cash value. There are no cash stakes, entry fees, payments, withdrawals, transfers, or real-money prizes.
-
-The app requires Supabase and Worker configuration for online play. Never expose the Supabase service role key to the frontend.
+- Each match has one Durable Object that serializes authoritative roll and move requests and broadcasts state changes over WebSockets.
+- Dice come only from Worker `crypto.getRandomValues()`; the client sends `POST /api/roll` with the match and signed-in player IDs.
+- The Worker validates turn ownership, pending dice, token selection, path bounds, safe cells, captures, and win conditions before writing moves.
+- Only the Worker changes coins, XP, levels, mission progress, and the ledger.
+- Passwords are PBKDF2 hashed and sessions are signed by the Worker. Keep `JWT_SECRET` and `DATABASE_URL` out of the frontend and Git.
+- This is free-to-play. Coins and gems have no cash value. There are no entry fees, UPI payments, cash withdrawals, wallet transfers, or real-money prizes.

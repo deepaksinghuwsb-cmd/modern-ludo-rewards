@@ -1,7 +1,9 @@
 node_modules/
 dist/
-android/
 .env
 .env.local
+.dev.vars
 .wrangler/
 *.log
+drizzle/meta/
+*.tsbuildinfo
