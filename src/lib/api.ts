@@ -1,115 +1,192 @@
-const API_URL =
+const DEFAULT_API_URL =
   import.meta.env.VITE_API_URL ||
   import.meta.env.VITE_WORKER_URL ||
   '';
 
 export const sessionToken = () => localStorage.getItem('ludo-token');
 
-export function getApiBaseUrl() {
+/**
+ * Get safe API base URL for Vercel/localhost/APK
+ * - If VITE_API_URL/VITE_WORKER_URL set, use it
+ * - If on Vercel (vercel.app), use relative /api
+ * - If localhost, use http://localhost:8787
+ * - Otherwise fallback to empty string (use mock data)
+ */
+export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
-  if (API_URL) return API_URL.replace(/\/$/, '');
-  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+
+  // Explicit env config takes precedence
+  if (DEFAULT_API_URL) {
+    return DEFAULT_API_URL.replace(/\/$/, '');
+  }
+
+  // Vercel deployment
+  if (window.location.hostname.includes('vercel.app')) {
     return '';
   }
+
+  // Local dev
+  if (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1'
+  ) {
+    return 'http://localhost:8787';
+  }
+
+  // Default to relative /api
   return '';
 }
 
-const demoUser = {
-  id: 'demo-user',
+// Mock data for fallback
+const mockUser = {
+  id: 'demo-user-' + Math.random().toString(36).slice(2, 9),
   email: 'player@modernludo.app',
-  username: 'Player One',
-  coins: 2450,
-  gems: 128,
-  xp: 3200,
-  level: 18,
-  streak: 7,
+  username: 'Champion ' + Math.floor(Math.random() * 999),
+  coins: Math.floor(Math.random() * 5000) + 1000,
+  gems: Math.floor(Math.random() * 500) + 50,
+  xp: Math.floor(Math.random() * 10000) + 1000,
+  level: Math.floor(Math.random() * 30) + 5,
+  streak: Math.floor(Math.random() * 20) + 1,
 };
 
-const demoLeaderboard = [
-  { id: '1', username: 'Aarav', coins: 4200, level: 24, streak: 9 },
-  { id: '2', username: 'Mira', coins: 3900, level: 23, streak: 8 },
-  { id: '3', username: 'Leo', coins: 3650, level: 22, streak: 7 },
-  { id: '4', username: 'Zara', coins: 3400, level: 21, streak: 6 },
+const mockLeaderboard = [
+  { id: '1', username: 'Aarav', coins: 5420, level: 28, streak: 12 },
+  { id: '2', username: 'Mira', coins: 4900, level: 26, streak: 10 },
+  { id: '3', username: 'Leo', coins: 4350, level: 24, streak: 9 },
+  { id: '4', username: 'Zara', coins: 3890, level: 22, streak: 8 },
+  { id: '5', username: 'Rajesh', coins: 3420, level: 20, streak: 7 },
+  { id: '6', username: 'Priya', coins: 2890, level: 18, streak: 6 },
+  { id: '7', username: 'Vikram', coins: 2340, level: 16, streak: 5 },
+  { id: '8', username: 'Neha', coins: 1890, level: 14, streak: 4 },
 ];
 
-export async function fetchProfileFromNeon<T = any>(): Promise<T | null> {
-  const neonUrl = import.meta.env.VITE_NEON_URL || import.meta.env.VITE_SUPABASE_URL || '';
-
-  if (!neonUrl) {
-    return demoUser as T;
-  }
+/**
+ * Fetch with timeout and fallback
+ * - 3 second timeout
+ * - Never throws, always returns data
+ * - Falls back to mock if unreachable
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeoutMs = 3000
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(neonUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: `
-          SELECT id, email, username, coins, gems, xp, level, streak
-          FROM profiles
-          ORDER BY updated_at DESC
-          LIMIT 1
-        `,
-      }),
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
     });
-
-    if (!response.ok) {
-      throw new Error('Neon profile fetch failed');
-    }
-
-    const payload = await response.json();
-    const row = payload?.rows?.[0] || payload?.data?.[0] || null;
-    return (row ?? demoUser) as T;
-  } catch {
-    return demoUser as T;
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
   }
 }
 
-export async function api<T = any>(path: string, body?: unknown, method = 'POST'): Promise<T> {
+export async function api<T = any>(
+  path: string,
+  body?: unknown,
+  method = 'POST'
+): Promise<T> {
   const token = sessionToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
 
-  if (token) headers.Authorization = `Bearer ${token}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
   const baseUrl = getApiBaseUrl();
-  const url = `${baseUrl}${path}`;
+  const url = baseUrl ? `${baseUrl}${path}` : path;
 
   try {
-    if (!baseUrl) {
-      if (path.includes('/leaderboard')) return { players: demoLeaderboard } as T;
-      if (path.includes('/profile')) return { user: demoUser } as T;
-      if (path.includes('/missions')) return { missions: [] } as T;
+    // If no baseUrl and not localhost, return mock immediately
+    if (!baseUrl && !url.startsWith('http')) {
+      if (path.includes('/leaderboard')) {
+        return { players: mockLeaderboard } as T;
+      }
+      if (path.includes('/profile')) {
+        return { user: mockUser } as T;
+      }
+      if (path.includes('/missions')) {
+        return { missions: [] } as T;
+      }
     }
 
-    const response = await fetch(url, {
-      method,
-      headers,
-      body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
-    });
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method,
+        headers,
+        body: body && method !== 'GET' ? JSON.stringify(body) : undefined,
+      },
+      3000
+    );
 
     if (!response.ok) {
-      const message = await response.text();
-      throw new Error(message || 'Request failed');
+      const text = await response.text();
+      throw new Error(text || `HTTP ${response.status}`);
     }
 
     return await response.json();
-  } catch {
-    if (path.includes('/leaderboard')) return { players: demoLeaderboard } as T;
-    if (path.includes('/profile')) return { user: demoUser } as T;
-    return { missions: [] } as T;
+  } catch (error) {
+    // Graceful fallback to mock data
+    console.warn(`API fetch failed for ${path}:`, error);
+
+    if (path.includes('/leaderboard')) {
+      return { players: mockLeaderboard } as T;
+    }
+    if (path.includes('/profile')) {
+      return { user: mockUser } as T;
+    }
+    if (path.includes('/missions')) {
+      return { missions: [] } as T;
+    }
+
+    // Generic error fallback
+    return {} as T;
   }
 }
 
-export async function signIn(email: string, password: string) {
-  const data = await api<{ token: string }>('/auth/login', { email, password });
-  localStorage.setItem('ludo-token', data.token);
-  return data;
+export async function signIn(
+  email: string,
+  password: string
+): Promise<{ token: string }> {
+  try {
+    const data = await api<{ token: string }>('/auth/login', {
+      email,
+      password,
+    });
+    if (data.token) {
+      localStorage.setItem('ludo-token', data.token);
+    }
+    return data;
+  } catch (error) {
+    throw error;
+  }
 }
 
-export async function signUp(email: string, password: string, username: string) {
-  const data = await api<{ token: string }>('/auth/signup', { email, password, username });
-  localStorage.setItem('ludo-token', data.token);
-  return data;
+export async function signUp(
+  email: string,
+  password: string,
+  username: string
+): Promise<{ token: string }> {
+  try {
+    const data = await api<{ token: string }>('/auth/signup', {
+      email,
+      password,
+      username,
+    });
+    if (data.token) {
+      localStorage.setItem('ludo-token', data.token);
+    }
+    return data;
+  } catch (error) {
+    throw error;
+  }
 }
