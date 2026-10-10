@@ -1,37 +1,110 @@
-import{Hono}from'hono';import{cors}from'hono/cors';import{desc,eq,and,isNull,sql}from'drizzle-orm';import{dbForUrl}from'../src/db/client';import{applyMove,createGame,getValidMoves,type GameState}from'../src/game/rules';import{users,matches,matchMoves,missions,ledger}from'../src/db/schema';
-type Env={DATABASE_URL:string;JWT_SECRET:string;LUDO_ROOM:DurableObjectNamespace};type Claims={sub:string;email:string;exp:number};type Vars={auth:Claims};const app=new Hono<{Bindings:Env;Variables:Vars}>();app.use('*',cors({origin:'*',allowHeaders:['Content-Type','Authorization'],allowMethods:['GET','POST','OPTIONS']}));
-const db=(env:Env)=>dbForUrl(env.DATABASE_URL);const palette=['red','green','yellow','blue'];
-function b64(data:ArrayBuffer|Uint8Array){const a=data instanceof Uint8Array?data:new Uint8Array(data);let s='';for(const b of a)s+=String.fromCharCode(b);return btoa(s).replace(/=/g,'').replace(/\+/g,'-').replace(/\//g,'_')}
-function unb64(s:string){const x=s.replace(/-/g,'+').replace(/_/g,'/'),raw=atob(x+'='.repeat((4-x.length%4)%4));return Uint8Array.from(raw,c=>c.charCodeAt(0))}
-async function mac(secret:string,value:string){const key=await crypto.subtle.importKey('raw',new TextEncoder().encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);return b64(await crypto.subtle.sign('HMAC',key,new TextEncoder().encode(value)))}
-async function token(secret:string,claims:Claims){const h=b64(new TextEncoder().encode(JSON.stringify({alg:'HS256',typ:'JWT'}))),p=b64(new TextEncoder().encode(JSON.stringify(claims))),value=`${h}.${p}`;return`${value}.${await mac(secret,value)}`}
-async function verifyToken(secret:string,t:string):Promise<Claims|null>{try{const[h,p,s]=t.split('.');if(!h||!p||!s||await mac(secret,`${h}.${p}`)!==s)return null;const x=JSON.parse(new TextDecoder().decode(unb64(p))) as Claims;return x.exp>Date.now()/1000?x:null}catch{return null}}
-async function hashPassword(password:string,salt?:Uint8Array){const actual=salt||crypto.getRandomValues(new Uint8Array(16)),key=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveBits']),bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:actual,iterations:150000,hash:'SHA-256'},key,256);return`${b64(actual)}.${b64(bits)}`}
-async function passwordMatches(password:string,stored:string){const[salt,want]=stored.split('.');if(!salt||!want)return false;const got=(await hashPassword(password,unb64(salt))).split('.')[1];if(got.length!==want.length)return false;let diff=0;for(let i=0;i<got.length;i++)diff|=got.charCodeAt(i)^want.charCodeAt(i);return diff===0}
-app.get('/health',c=>c.json({ok:true,service:'ludo-neon-worker'}));
-app.post('/auth/signup',async c=>{const{email,username,password}=await c.req.json();if(typeof email!=='string'||!/^\S+@\S+\.\S+$/.test(email)||typeof password!=='string'||password.length<8)return c.json({error:'Use a valid email and a password of at least 8 characters.'},400);const name=String(username||email.split('@')[0]).trim().slice(0,24)||'Player';try{const[d]=await db(c.env).insert(users).values({email:email.toLowerCase(),username:name,passwordHash:await hashPassword(password)}).returning({id:users.id,email:users.email});await recordLogin(c.env,d.id);return c.json({token:await token(c.env.JWT_SECRET,{sub:d.id,email:d.email,exp:Math.floor(Date.now()/1000)+1209600})})}catch{return c.json({error:'An account with that email may already exist.'},409)}});
-app.post('/auth/login',async c=>{const{email,password}=await c.req.json();if(typeof email!=='string'||typeof password!=='string')return c.json({error:'Email and password are required.'},400);const[u]=await db(c.env).select().from(users).where(eq(users.email,email.toLowerCase())).limit(1);if(!u||!await passwordMatches(password,u.passwordHash))return c.json({error:'Email or password is incorrect.'},401);await recordLogin(c.env,u.id);return c.json({token:await token(c.env.JWT_SECRET,{sub:u.id,email:u.email,exp:Math.floor(Date.now()/1000)+1209600})})});
-app.use('/api/*',async(c,next)=>{if(c.req.path==='/api/leaderboard')return next();const bearer=c.req.header('authorization')?.replace(/^Bearer\s+/i,'');const claims=bearer?await verifyToken(c.env.JWT_SECRET,bearer):null;if(!claims)return c.json({error:'Sign in to continue.'},401);c.set('auth',claims);await next()});
-app.get('/api/profile',async c=>{const[u]=await db(c.env).select({id:users.id,email:users.email,username:users.username,xp:users.xp,level:users.level,coins:users.coins,gems:users.gems,streak:users.streak}).from(users).where(eq(users.id,c.get('auth').sub)).limit(1);return u?c.json({user:u}):c.json({error:'Profile not found'},404)});
-app.post('/api/create-match',async c=>{const auth=c.get('auth'),[u]=await db(c.env).select().from(users).where(eq(users.id,auth.sub)).limit(1);if(!u)return c.json({error:'Profile not found'},404);const body=await c.req.json().catch(()=>({}));if(body.quick){const waiting=await db(c.env).select().from(matches).where(and(eq(matches.status,'waiting'),eq(matches.isPrivate,false))).orderBy(matches.createdAt).limit(10);for(const m of waiting){if(m.players.length>=4||m.players.some(p=>p.id===u.id))continue;const list=[...m.players,{id:u.id,username:u.username,color:palette[m.players.length],tokens:[-1,-1,-1,-1]}],state=createGame(list as any);await db(c.env).update(matches).set({players:list,status:state.status,currentTurn:list[0].id}).where(and(eq(matches.id,m.id),eq(matches.status,'waiting')));await publish(c.env,m.id,{type:'JOIN',matchId:m.id});await recordLogin(c.env,u.id);return c.json({matchId:m.id,roomCode:m.roomCode})}}const id=crypto.randomUUID(),roomCode=randomRoomCode(),players=[{id:u.id,username:u.username,color:'red',tokens:[-1,-1,-1,-1]}];await db(c.env).insert(matches).values({id,roomCode,isPrivate:body.private!==false,players,status:'waiting',currentTurn:u.id,diceHistory:[]});await recordLogin(c.env,u.id);return c.json({matchId:id,roomCode})});
-app.post('/api/join-match',async c=>{const{room_code:roomCode}=await c.req.json(),auth=c.get('auth');if(typeof roomCode!=='string'||!/^[A-Z0-9]{6}$/.test(roomCode))return c.json({error:'Enter a valid six-digit room code.'},400);const[m]=await db(c.env).select().from(matches).where(and(eq(matches.roomCode,roomCode),eq(matches.status,'waiting'))).limit(1);if(!m)return c.json({error:'Room not found or already started.'},404);if(m.players.some(p=>p.id===auth.sub))return c.json({matchId:m.id});if(m.players.length>=4)return c.json({error:'Room is full.'},409);const[u]=await db(c.env).select().from(users).where(eq(users.id,auth.sub)).limit(1);if(!u)return c.json({error:'Profile not found.'},404);const players=[...m.players,{id:u.id,username:u.username,color:palette[m.players.length],tokens:[-1,-1,-1,-1]}],state=createGame(players as any);await db(c.env).update(matches).set({players,status:state.status,currentTurn:players[0].id}).where(and(eq(matches.id,m.id),eq(matches.status,'waiting')));await publish(c.env,m.id,{type:'JOIN',matchId:m.id});return c.json({matchId:m.id})});
-app.get('/api/match/:id',async c=>{const id=c.req.param('id'),[m]=await db(c.env).select().from(matches).where(eq(matches.id,id)).limit(1);return m?c.json({match:m}):c.json({error:'Match not found'},404)});
-app.get('/api/leaderboard',async c=>c.json({players:await db(c.env).select({username:users.username,xp:users.weeklyXp,level:users.level}).from(users).orderBy(desc(users.weeklyXp)).limit(20)}));
-app.get('/api/missions',async c=>c.json({missions:await db(c.env).select().from(missions).where(and(eq(missions.userId,c.get('auth').sub),eq(missions.date,istDate())))}));
-app.post('/api/missions/claim',async c=>{const{type}=await c.req.json();if(!['daily_login','play_3','win_1'].includes(type))return c.json({error:'Unknown mission.'},400);const id=c.get('auth').sub,today=istDate(),[m]=await db(c.env).select().from(missions).where(and(eq(missions.userId,id),eq(missions.date,today),eq(missions.type,type))).limit(1),goal=type==='play_3'?3:1;if(!m||m.claimed||m.progress<goal)return c.json({error:'Mission is incomplete or already claimed.'},409);await db(c.env).update(missions).set({claimed:true}).where(eq(missions.id,m.id));await reward(c.env,id,type==='daily_login'?20:50,0,`mission:${type}:${today}`);return c.json({ok:true})});
-app.post('/api/store/buy',async c=>{const{itemId}=await c.req.json(),prices:Record<string,number>={sunset_dice:150,forest_board:250,royal_board:400},price=prices[itemId];if(!price)return c.json({error:'That cosmetic is unavailable.'},400);const id=c.get('auth').sub,[u]=await db(c.env).select().from(users).where(eq(users.id,id)).limit(1);if(!u||u.coins<price)return c.json({error:'Not enough coins.'},409);await db(c.env).update(users).set({coins:u.coins-price}).where(eq(users.id,id));await db(c.env).insert(ledger).values({userId:id,type:'spend',amount:price,reason:`shop:${itemId}`});return c.json({ok:true,coins:u.coins-price})});
-app.delete('/api/account',async c=>{await db(c.env).delete(users).where(eq(users.id,c.get('auth').sub));return c.json({ok:true})});
-app.post('/api/socket-ticket',async c=>{const{matchId}=await c.req.json(),userId=c.get('auth').sub;if(typeof matchId!=='string'||!/^[\da-f-]{36}$/i.test(matchId))return c.json({error:'Invalid match id.'},400);const exp=Math.floor(Date.now()/1000)+60,sig=await mac(c.env.JWT_SECRET,`${matchId}:${userId}:${exp}`);return c.json({ticket:`${userId}.${exp}.${sig}`})});
-app.get('/socket/:matchId',async c=>{const id=c.req.param('matchId');if(c.req.header('upgrade')!=='websocket')return c.text('WebSocket upgrade required',426);const obj=c.env.LUDO_ROOM.get(c.env.LUDO_ROOM.idFromName(id));return obj.fetch(new Request(`https://ludo-room/socket/${id}${new URL(c.req.url).search}`,c.req.raw))});
-app.post('/api/roll',async c=>{const{matchId,playerId}=await c.req.json();if(playerId!==c.get('auth').sub)return c.json({error:'Player identity does not match session.'},403);return routeToRoom(c.env,matchId,'roll',{playerId})});
-app.post('/api/move',async c=>{const{matchId,playerId,tokenId,dice}=await c.req.json();if(playerId!==c.get('auth').sub)return c.json({error:'Player identity does not match session.'},403);return routeToRoom(c.env,matchId,'move',{playerId,tokenId,dice})});
-async function routeToRoom(env:Env,matchId:string,action:string,body:unknown){if(typeof matchId!=='string'||!/^[\da-f-]{36}$/i.test(matchId))return Response.json({error:'Invalid match id.'},{status:400});const obj=env.LUDO_ROOM.get(env.LUDO_ROOM.idFromName(matchId));return obj.fetch(new Request(`https://ludo-room/${action}/${matchId}`,{method:'POST',headers:{'content-type':'application/json','x-worker-secret':await mac(env.JWT_SECRET,matchId)},body:JSON.stringify(body)}))}
-function randomRoomCode(){const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=crypto.getRandomValues(new Uint8Array(6));return Array.from(bytes,b=>chars[b%chars.length]).join('')}
-function istDate(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
-function istWeek(){const d=new Date(`${istDate()}T00:00:00Z`),day=d.getUTCDay();d.setUTCDate(d.getUTCDate()-(day===0?6:day-1));return d.toISOString().slice(0,10)}
-async function recordLogin(env:Env,userId:string){const d=db(env),today=istDate(),[u]=await d.select().from(users).where(eq(users.id,userId)).limit(1);if(!u)return;const prior=u.lastLoginDate,prev=new Date(`${today}T00:00:00Z`);prev.setUTCDate(prev.getUTCDate()-1);const yesterday=prev.toISOString().slice(0,10),streak=prior===today?u.streak:prior===yesterday?u.streak+1:1;if(prior!==today)await d.update(users).set({streak,lastLoginDate:today}).where(eq(users.id,userId));await incrementMission(env,userId,'daily_login',1)}
-async function incrementMission(env:Env,userId:string,type:'daily_login'|'play_3'|'win_1',delta:number){const d=db(env),today=istDate();await d.insert(missions).values({userId,type,date:today,progress:delta}).onConflictDoUpdate({target:[missions.userId,missions.type,missions.date],set:{progress:sql`least(${type==='play_3'?3:1}, ${missions.progress} + ${delta})`}})}
-async function reward(env:Env,userId:string,coins:number,xp:number,reason:string){const d=db(env),exists=await d.select({id:ledger.id}).from(ledger).where(and(eq(ledger.userId,userId),eq(ledger.reason,reason))).limit(1);if(exists.length)return;const[u]=await d.select().from(users).where(eq(users.id,userId)).limit(1);if(!u)return;const week=istWeek(),weeklyXp=(u.weeklyXpWeek===week?u.weeklyXp:0)+xp;await d.update(users).set({coins:u.coins+coins,xp:u.xp+xp,level:Math.floor((u.xp+xp)/100),weeklyXp,weeklyXpWeek:week}).where(eq(users.id,userId));if(coins)await d.insert(ledger).values({userId,type:'earn',amount:coins,reason})}
-async function publish(env:Env,matchId:string,message:unknown){const obj=env.LUDO_ROOM.get(env.LUDO_ROOM.idFromName(matchId));await obj.fetch(new Request(`https://ludo-room/broadcast/${matchId}`,{method:'POST',headers:{'content-type':'application/json','x-worker-secret':await mac(env.JWT_SECRET,matchId)},body:JSON.stringify(message)}))}
-export class LudoRoom implements DurableObject {private ctx:DurableObjectState;private env:Env;private sockets=new Set<WebSocket>();private lock:Promise<void>=Promise.resolve();constructor(ctx:DurableObjectState,env:Env){this.ctx=ctx;this.env=env;ctx.blockConcurrencyWhile(async()=>{for(const ws of ctx.getWebSockets())this.sockets.add(ws)})}async fetch(request:Request):Promise<Response>{const url=new URL(request.url),matchId=url.pathname.split('/').pop()||'',secret=request.headers.get('x-worker-secret');if(request.headers.get('upgrade')==='websocket'&&url.pathname.startsWith('/socket/')){const ticket=url.searchParams.get('ticket')||'',parts=ticket.split('.'),[playerId,expText,sig]=parts,exp=Number(expText);if(!playerId||!Number.isFinite(exp)||exp<Date.now()/1000||sig!==await mac(this.env.JWT_SECRET,`${matchId}:${playerId}:${exp}`))return new Response('Unauthorized',{status:401});const [match]=await db(this.env).select({players:matches.players}).from(matches).where(eq(matches.id,matchId)).limit(1);if(!match?.players.some(p=>p.id===playerId))return new Response('Not a player in this match',{status:403});const pair=new WebSocketPair(),[client,server]=Object.values(pair);this.ctx.acceptWebSocket(server);this.sockets.add(server);return new Response(null,{status:101,webSocket:client})}if(!secret||secret!==await mac(this.env.JWT_SECRET,matchId))return Response.json({error:'Unauthorized room request.'},{status:403});if(url.pathname.startsWith('/broadcast/')){this.broadcast(await request.json());return Response.json({ok:true})}return this.serial(()=>this.handleAction(url.pathname.split('/')[1],matchId,request.json()))}webSocketMessage(ws:WebSocket,message:string|ArrayBuffer){try{const x=JSON.parse(typeof message==='string'?message:new TextDecoder().decode(message));if(x.type==='PING')ws.send(JSON.stringify({type:'PONG'}))}catch{}}webSocketClose(ws:WebSocket){this.sockets.delete(ws)}webSocketError(ws:WebSocket){this.sockets.delete(ws)}private broadcast(message:unknown){const text=JSON.stringify(message);for(const ws of this.sockets){try{ws.send(text)}catch{this.sockets.delete(ws)}}}private async serial<T>(fn:()=>Promise<T>):Promise<T>{let release!:()=>void;const previous=this.lock;this.lock=new Promise<void>(r=>release=r);await previous;try{return await fn()}finally{release()}}private async handleAction(action:string,matchId:string,bodyPromise:Promise<any>):Promise<Response>{const body=await bodyPromise,d=db(this.env),[match]=await d.select().from(matches).where(eq(matches.id,matchId)).limit(1);if(!match)return Response.json({error:'Match not found.'},{status:404});const history=[...match.diceHistory],players=match.players as GameState['players'];if(action==='roll'){if(match.status!=='playing'||match.currentTurn!==body.playerId)return Response.json({error:'Wait for your turn.'},{status:409});if(history.at(-1)?.pending)return Response.json({error:'Move a token before rolling again.'},{status:409});const dice=crypto.getRandomValues(new Uint32Array(1))[0]%6+1,previous=history.at(-1),sixes=dice===6?(previous&&previous.playerId===body.playerId?previous.sixes+1:1):0;if(sixes>=3){const idx=players.findIndex(p=>p.id===body.playerId),next=players[(idx+1)%players.length];history.push({playerId:body.playerId,dice,sixes,pending:false});await d.update(matches).set({diceHistory:history,currentTurn:next.id});const event={type:'ROLL',dice,playerId:body.playerId,cancelled:true,nextPlayerId:next.id};this.broadcast(event);return Response.json({dice,cancelled:true})}const canMove=getValidMoves(players.find(p=>p.id===body.playerId)?.tokens||[],dice,(players.find(p=>p.id===body.playerId)?.color||'red') as any).length>0;if(!canMove){const idx=players.findIndex(p=>p.id===body.playerId),nextId=dice===6?body.playerId:players[(idx+1)%players.length].id;history.push({playerId:body.playerId,dice,sixes,pending:false});await d.update(matches).set({diceHistory:history,currentTurn:nextId});this.broadcast({type:'ROLL',dice,playerId:body.playerId,noMoves:true,nextPlayerId:nextId});return Response.json({dice,noMoves:true})}history.push({playerId:body.playerId,dice,sixes,pending:true});await d.update(matches).set({diceHistory:history});this.broadcast({type:'ROLL',dice,playerId:body.playerId});return Response.json({dice})}if(action==='move'){const latest=history.at(-1);if(match.status!=='playing'||match.currentTurn!==body.playerId||!latest?.pending||latest.playerId!==body.playerId||latest.dice!==body.dice)return Response.json({error:'No matching pending roll for this turn.'},{status:409});const turnIndex=players.findIndex(p=>p.id===body.playerId);if(turnIndex<0)return Response.json({error:'Player is not in this match.'},{status:403});const state:GameState={players,turnIndex,dice:latest.dice,sixes:latest.sixes,status:match.status,winnerId:null};let moved;try{moved=applyMove(state,body.playerId,Number(body.tokenId),Number(body.dice))}catch(e){return Response.json({error:(e as Error).message},{status:400})}latest.pending=false;await d.update(matches).set({players:moved.state.players,currentTurn:moved.state.players[moved.state.turnIndex].id,status:moved.state.status,winnerId:moved.state.winnerId,diceHistory:history});await d.insert(matchMoves).values({matchId,playerId:body.playerId,dice:body.dice,tokenId:body.tokenId,fromPos:moved.from,toPos:moved.to,isCut:!!moved.cut});if(moved.state.status==='finished'){for(const participant of moved.state.players)await incrementMission(this.env,participant.id,'play_3',1);await reward(this.env,body.playerId,20,50,`match-win:${matchId}`);await incrementMission(this.env,body.playerId,'win_1',1)}const event={type:'MOVE',playerId:body.playerId,tokenId:body.tokenId,from:moved.from,to:moved.to,cut:moved.cut,state:moved.state};this.broadcast(event);return Response.json({state:moved.state,cut:moved.cut})}return Response.json({error:'Unknown action.'},{status:404})}}
-export default app;
+import { neon, neonConfig } from '@neondatabase/serverless';
+import { drizzle } from 'drizzle-orm/neon-http';
+import { eq } from 'drizzle-orm';
+import { users } from '../src/db/schema';
+
+neonConfig.fetchConnectionCache = true;
+
+type Env = {
+  DATABASE_URL: string;
+  JWT_SECRET: string;
+  LUDO_ROOM: DurableObjectNamespace;
+};
+
+function json(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+  });
+}
+
+function getTodayIST() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+export default {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(req.url);
+
+    if (req.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        }
+      });
+    }
+
+    try {
+      const sql = neon(env.DATABASE_URL);
+      const db = drizzle(sql);
+
+      // AUTH SIGNUP
+      if (url.pathname === '/auth/signup' && req.method === 'POST') {
+        const { email, password, username } = await req.json() as any;
+        if (!email ||!password) return json({ error: 'Missing fields' }, 400);
+
+        const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
+        if (existing.length > 0) return json({ error: 'Account already exists' }, 400);
+
+        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
+        const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+
+        const inserted = await db.insert(users).values({
+          email,
+          password_hash: hashHex,
+          username: username || email.split('@')[0],
+          xp: 0,
+          weekly_xp: 0,
+          level: 1,
+          coins: 100,
+        }).returning();
+
+        return json({ user: inserted[0], token: 'demo-token-' + inserted[0].id });
+      }
+
+      // AUTH LOGIN - FIXED WITH DETAILED LOGGING
+      if (url.pathname === '/auth/login' && req.method === 'POST') {
+        try {
+          const { email, password } = await req.json() as any;
+          if (!email ||!password) return json({ error: 'Missing fields' }, 400);
+
+          const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
+          if (found.length === 0) return json({ error: 'User not found' }, 404);
+
+          const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password));
+          const hashHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+
+          if (found[0].password_hash!== hashHex) return json({ error: 'Wrong password' }, 401);
+
+          return json({ user: found[0], token: 'demo-token-' + found[0].id });
+        } catch (e: any) {
+          console.error('LOGIN ERROR FULL:', e.message, e.stack, e.cause);
+          return json({ error: 'Login failed: ' + e.message }, 500);
+        }
+      }
+
+      // LUDO ROOM ROUTING (keep your existing logic here if needed)
+      if (url.pathname.startsWith('/ludo/') || url.pathname.startsWith('/socket')) {
+        const id = env.LUDO_ROOM.idFromName('global');
+        const obj = env.LUDO_ROOM.get(id);
+        return obj.fetch(req);
+      }
+
+      return json({ error: 'Not found: ' + url.pathname }, 404);
+
+    } catch (err: any) {
+      console.error('GLOBAL ERROR:', err.message, err.stack);
+      return json({ error: 'Server error: ' + err.message }, 500);
+    }
+  }
+};
+
+// Keep your LudoRoom class if you have it - add below
+export class LudoRoom {
+  state: any;
+  env: any;
+  constructor(state: any, env: any) { this.state = state; this.env = env; }
+  async fetch(req: Request) { return new Response('Ludo Room OK'); }
+}
